@@ -1,0 +1,52 @@
+# Daily revenue brief on GitHub Actions.
+#
+# HOW TO USE: copy this file to .github/workflows/daily-brief.yml in your OWN PRIVATE copy
+# of this repo (never a public one - the job writes your numbers into its state). Then add
+# each value from your .env as a repository secret: Settings > Secrets and variables >
+# Actions > New repository secret. Only add the secrets for the sources you use.
+#
+# The schedule is in UTC. 12:00 UTC is 7:00 AM US Eastern in winter and 8:00 AM in summer.
+# State (.revops/) is kept between runs with the cache, so dedupe, forecast history and
+# last-good data work across days.
+name: daily-brief
+on:
+  schedule:
+    - cron: "0 12 * * *"
+  workflow_dispatch: {}
+concurrency:
+  group: daily-brief
+  cancel-in-progress: false
+jobs:
+  brief:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - uses: actions/cache@v4
+        with:
+          path: .revops
+          key: revops-state-${{ github.run_id }}
+          restore-keys: revops-state-
+      - name: Post the brief
+        env:
+          SLACK_BOT_TOKEN: ${{ secrets.SLACK_BOT_TOKEN }}
+          SLACK_CHANNEL: ${{ secrets.SLACK_CHANNEL }}
+          SLACK_OWNER_ID: ${{ secrets.SLACK_OWNER_ID }}
+          REVOPS_GOAL: ${{ secrets.REVOPS_GOAL }}
+          SHOPIFY_STORE: ${{ secrets.SHOPIFY_STORE }}
+          SHOPIFY_TOKEN: ${{ secrets.SHOPIFY_TOKEN }}
+          SHOPIFY_API_VERSION: ${{ secrets.SHOPIFY_API_VERSION }}
+          FUNNEL_CSV: ${{ secrets.FUNNEL_CSV }}
+          STRIPE_KEY: ${{ secrets.STRIPE_KEY }}
+          META_TOKEN: ${{ secrets.META_TOKEN }}
+          META_AD_ACCOUNT: ${{ secrets.META_AD_ACCOUNT }}
+          META_API_VERSION: ${{ secrets.META_API_VERSION }}
+          GHL_TOKEN: ${{ secrets.GHL_TOKEN }}
+          GHL_LOCATION_ID: ${{ secrets.GHL_LOCATION_ID }}
+          EXTRA_CSV_URL: ${{ secrets.EXTRA_CSV_URL }}
+        run: |
+          if [ -n "$REVOPS_GOAL" ]; then python3 scripts/revops.py train --goal "$REVOPS_GOAL" --by github-actions > /dev/null; fi
+          python3 slack/post_brief.py

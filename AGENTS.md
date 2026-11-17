@@ -28,3 +28,13 @@ Read `CI-STANDARD.md` at the repository root before you push code or change anyt
 - `CI-STANDARD.md` and the files under `.github/ci-standard/` (except `config.json`) are byte copies from `rbediner/automation-estate`.
   Do not edit them here; change the canonical copy there and the installer opens the pull requests.
 <!-- ci-standard:end -->
+
+## This repository
+
+`ecom-revops` is a public, member-facing skill: an e-commerce RevOps and CRO analyst (engine, self-healing
+connectors, Slack bot, dashboard, CRO tools, grounded chat brain). `SKILL.md` is the agent's brain; the code is in
+`scripts/`, `slack/` and `dashboard/`. It must never contain Agentic Society's own data, ids, keys or internal links.
+
+- The numbers contract in `SKILL.md` section 2 is enforced by `tests/`. A change that weakens it is a regression.
+- Any metric added, removed or re-sourced updates `scripts/catalog.py` and `MAGIC-SAUCE.md` in the same change.
+- Run `python3 -m unittest discover -s tests` (the local gate does) before every push.

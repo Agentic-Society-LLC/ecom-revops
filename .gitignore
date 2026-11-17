@@ -1,0 +1,7 @@
+.env
+.revops/
+/daily.csv
+/dashboard.html
+__pycache__/
+*.pyc
+.DS_Store

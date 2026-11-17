@@ -1,0 +1,187 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Revenue Dashboard</title>
+<style>
+:root{--bg:#f7f7f5;--card:#fff;--ink:#16181d;--muted:#5d6470;--line:#e4e4df;--accent:#2f6fed;--good:#13804b;--bad:#c2410c;--warn:#a16207;--chip:#eef2fb}
+@media (prefers-color-scheme:dark){:root{--bg:#111317;--card:#1a1d23;--ink:#eceef2;--muted:#9aa2ae;--line:#2a2f37;--accent:#6b9bff;--good:#3fbf7f;--bad:#f2884b;--warn:#e0b341;--chip:#1f2a40}}
+*{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--ink);font:15px/1.45 -apple-system,BlinkMacSystemFont,"Segoe UI",Inter,sans-serif}
+header{position:sticky;top:0;z-index:5;background:var(--bg);border-bottom:1px solid var(--line);padding:14px 20px 0}
+.top{display:flex;justify-content:space-between;align-items:baseline;gap:12px;flex-wrap:wrap}
+h1{font-size:18px;margin:0}.asof{color:var(--muted);font-size:13px}
+nav{display:flex;gap:4px;overflow-x:auto;margin-top:10px}
+nav button{background:none;border:0;border-bottom:2px solid transparent;color:var(--muted);padding:8px 10px;font:inherit;cursor:pointer;white-space:nowrap}
+nav button.on{color:var(--ink);border-color:var(--accent)}
+main{max-width:1100px;margin:0 auto;padding:20px 16px 60px}
+section{display:none}section.on{display:block}
+.grid{display:grid;gap:14px;grid-template-columns:repeat(auto-fit,minmax(220px,1fr))}
+.card{background:var(--card);border:1px solid var(--line);border-radius:12px;padding:16px}
+.hero{grid-column:1/-1}.label{color:var(--muted);font-size:12px;text-transform:uppercase;letter-spacing:.06em}
+.big{font-size:34px;font-weight:650;letter-spacing:-.02em;margin:4px 0}.mid{font-size:22px;font-weight:600;margin:4px 0}
+.src{display:inline-block;font-size:11px;padding:2px 8px;border-radius:99px;background:var(--chip);color:var(--muted);margin-top:4px}
+.src.measured{color:var(--good)}.src.trained,.src.default,.src.estimate{color:var(--warn)}.src.scenario{color:var(--accent)}.src.unavailable{color:var(--bad)}
+.bar{height:10px;border-radius:99px;background:var(--line);overflow:hidden;margin:10px 0 4px;position:relative}
+.bar i{display:block;height:100%;background:var(--accent)}.bar b{position:absolute;top:-3px;width:2px;height:16px;background:var(--ink)}
+.good{color:var(--good)}.bad{color:var(--bad)}.muted{color:var(--muted)}
+table{width:100%;border-collapse:collapse}td,th{text-align:left;padding:9px 6px;border-bottom:1px solid var(--line);font-size:14px}th{color:var(--muted);font-weight:500}
+td.n{text-align:right;font-variant-numeric:tabular-nums}
+.brief{white-space:pre-wrap;font-size:14px}
+input[type=range]{width:100%}.lever{margin:12px 0}.lever .row{display:flex;justify-content:space-between}
+button.act{background:var(--accent);color:#fff;border:0;border-radius:8px;padding:8px 14px;font:inherit;cursor:pointer}
+button.ghost{background:none;border:1px solid var(--line);color:var(--ink);border-radius:8px;padding:8px 14px;font:inherit;cursor:pointer}
+svg{width:100%;height:auto;display:block}.empty{color:var(--muted);font-style:italic}
+</style>
+</head>
+<body>
+<header>
+  <div class="top"><h1>Revenue</h1><span class="asof" id="asof"></span></div>
+  <nav id="tabs"></nav>
+</header>
+<main>
+  <section id="t-revenue"></section>
+  <section id="t-funnel"></section>
+  <section id="t-wow"></section>
+  <section id="t-whatif"></section>
+  <section id="t-sources"></section>
+  <section id="t-dictionary"></section>
+</main>
+<script>
+const S = /*__SNAPSHOT__*/null;
+const $ = (id) => document.getElementById(id);
+const money = (v) => v == null ? "unavailable" : "$" + Math.round(v).toLocaleString();
+const pct = (v, d = 1) => v == null ? "unavailable" : (v * 100).toFixed(d) + "%";
+const esc = (s) => String(s ?? "").replace(/[&<>"]/g, (c) => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;"}[c]));
+const signed = (v) => { const r = Math.round(v); return (r > 0 ? "+" : r < 0 ? "-" : "") + money(Math.abs(r)); };
+const chip = (src, note) => `<span class="src ${esc(src)}">${esc(src)}${note ? " · " + esc(note) : ""}</span>`;
+const store = { get(k){ try { return JSON.parse(localStorage.getItem(k)); } catch(e){ return null; } }, set(k,v){ try { localStorage.setItem(k, JSON.stringify(v)); } catch(e){} } };
+
+const TABS = [["revenue","Revenue"],["funnel","Funnel & leaks"],["wow","Week over week"],["whatif","What-if"],["sources","Data sources"],["dictionary","Metric dictionary"]];
+function show(id){ document.querySelectorAll("section").forEach(s => s.classList.toggle("on", s.id === "t-" + id));
+  document.querySelectorAll("nav button").forEach(b => { const on = b.dataset.t === id; b.classList.toggle("on", on);
+    if (on) b.scrollIntoView({ inline: "nearest", block: "nearest" }); });   // on a phone the active tab may be off-screen
+  store.set("tab", id); }
+$("tabs").innerHTML = TABS.map(([id, n]) => `<button data-t="${id}">${n}</button>`).join("");
+$("tabs").onclick = (e) => e.target.dataset.t && show(e.target.dataset.t);
+
+if (!S) { document.querySelector("main").innerHTML = '<p class="empty">No data yet. Run: python3 scripts/revops.py dashboard</p>'; }
+else render();
+
+function spark(daily){
+  const pts = daily.filter(d => d.revenue != null); if (pts.length < 2) return '<p class="empty">Not enough days to chart.</p>';
+  const W = 600, H = 120, max = Math.max(...pts.map(p => p.revenue)) || 1;
+  const x = (i) => i / (pts.length - 1) * W, y = (v) => H - v / max * (H - 10) - 5;
+  const path = pts.map((p, i) => (i ? "L" : "M") + x(i).toFixed(1) + " " + y(p.revenue).toFixed(1)).join(" ");
+  return `<svg viewBox="0 0 ${W} ${H}" role="img" aria-label="Daily revenue, last ${pts.length} days"><path d="${path}" fill="none" stroke="var(--accent)" stroke-width="2"/></svg>
+    <div class="muted" style="display:flex;justify-content:space-between;font-size:12px"><span>${pts[0].date}</span><span>daily revenue, peak ${money(max)}</span><span>${pts[pts.length-1].date}</span></div>`;
+}
+
+function render(){
+  const p = S.pacing;
+  $("asof").textContent = "Data through " + (p.as_of || S.this_week.split("..")[1]) + " · generated for " + S.generated_for;
+  // ---------------- revenue
+  let h = '<div class="grid">';
+  if (p.status === "live") {
+    const share = Math.min(1, p.revenue_mtd / p.goal), time = p.days_elapsed / (p.days_elapsed + p.days_left);
+    h += `<div class="card hero"><div class="label">This month</div>
+      <div class="big">${money(p.revenue_mtd)} <span class="muted" style="font-size:18px">of ${money(p.goal)}</span></div>
+      <div class="bar"><i style="width:${(share*100).toFixed(1)}%"></i><b style="left:${(time*100).toFixed(1)}%" title="where you'd be on an even pace"></b></div>
+      <div class="${p.ahead ? "good" : "bad"}">${p.ahead ? "Ahead of pace 👍" : "Behind pace"} · ${p.days_left} days left · landing about <b>${money(p.projected_month_end)}</b>
+      (${money(Math.abs(p.projected_vs_goal))} ${p.projected_vs_goal >= 0 ? "over" : "short"})</div>
+      <div class="muted" style="font-size:13px">${esc(p.run_rate_basis)} · confidence ${esc(p.confidence)}</div></div>`;
+    h += `<div class="card"><div class="label">Needed per day</div><div class="mid">${money(p.needed_per_day)}</div>
+      <div class="muted">${p.orders_needed ?? "?"} orders · ${p.sessions_needed ? p.sessions_needed.toLocaleString() : "?"} sessions</div></div>`;
+    h += `<div class="card"><div class="label">Conversion rate</div><div class="mid">${pct(p.conversion_rate.value, 2)}</div>${chip(p.conversion_rate.source, p.conversion_rate.note)}</div>`;
+    h += `<div class="card"><div class="label">Average order value</div><div class="mid">${money(p.aov.value)}</div>${chip(p.aov.source, p.aov.note)}</div>`;
+  } else h += `<div class="card hero"><div class="label">Pacing</div><div class="mid bad">Unavailable</div><div>${esc(p.detail)}</div></div>`;
+  const n7 = S.next_7_days;
+  h += `<div class="card"><div class="label">Next 7 days</div><div class="mid">${money(n7.value)}</div>${chip(n7.status === "estimate" ? "estimate" : "unavailable", n7.basis || n7.detail)}</div>`;
+  if (S.calibration) h += `<div class="card"><div class="label">Forecast check</div><div class="mid">${money(S.calibration.now)}</div>
+      <div class="muted">was ${money(S.calibration.last_forecast)} on ${esc(S.calibration.made_on)} · ${esc(S.calibration.verdict)}</div></div>`;
+  h += `<div class="card hero">${spark(S.daily)}</div>`;
+  h += `<div class="card hero"><div class="label">Today's brief</div><div class="brief">${esc(S.brief).replace(/\*\*(.+?)\*\*/g, "<b>$1</b>").replace(/^# (.+)$/m, "<b>$1</b>").replace(/^_(.+)_$/gm, '<i class="muted">$1</i>').replace(/`([^`]+)`/g, "<code>$1</code>")}</div></div></div>`;
+  $("t-revenue").innerHTML = h;
+  // ---------------- funnel
+  const f = S.funnel; let fh = `<div class="card"><div class="label">Funnel, ${esc(S.this_week)} vs 4-week baseline (${esc(f.baseline_window)})</div><table>
+    <tr><th>Stage</th><th class="n">This week</th><th class="n">Baseline</th><th class="n">Entrants</th></tr>`;
+  f.stages.forEach((st, i) => { const b = f.baseline_stages[i]; const worse = st.value != null && b.value != null && st.value < b.value;
+    fh += `<tr><td>${esc(st.stage)}</td><td class="n ${worse ? "bad" : ""}">${st.value == null ? '<span class="muted" title="' + esc(st.detail) + '">unavailable</span>' : pct(st.value)}</td>
+      <td class="n">${pct(b.value)}</td><td class="n">${st.n ? st.n.toLocaleString() : "-"}</td></tr>`; });
+  fh += `</table></div><div class="card" style="margin-top:14px"><div class="label">Leaks in dollars (last week, vs each stage's own baseline)</div><table>`;
+  S.leaks.forEach(l => fh += `<tr><td>${esc(l.stage)}</td><td class="n ${l.dollars > 0 ? "bad" : "good"}">${l.status === "live" ? (l.dollars > 0 ? money(l.dollars) + " lost" : money(-l.dollars) + " ahead") : '<span class="muted">unavailable</span>'}</td></tr>`);
+  fh += `</table><p class="muted" style="font-size:13px">A stage's leak = entrants × (baseline rate − this week's rate) × later stages × AOV. The biggest red number is where the next test goes.</p></div>`;
+  if (S.anomalies.length) fh += `<div class="card" style="margin-top:14px"><div class="label">Flags</div>${S.anomalies.map(a => `<div>• ${esc(a.detail)}</div>`).join("")}</div>`;
+  $("t-funnel").innerHTML = fh;
+  // ---------------- week over week
+  let wh = `<div class="card"><div class="label">${esc(S.this_week)} vs ${esc(S.last_week)}</div><table><tr><th>Metric</th><th class="n">Last week</th><th class="n">This week</th><th class="n">Change</th></tr>`;
+  S.wow.forEach(r => { const rate = /rate/i.test(r.label); const fmt = (v) => rate ? pct(v, 2) : (r.label === "Revenue" ? money(v) : (v == null ? "unavailable" : Math.round(v).toLocaleString()));
+    const ch = r.status === "ok" ? `<span class="${r.delta >= 0 ? "good" : "bad"}">${r.delta >= 0 ? "+" : ""}${(r.pct * 100).toFixed(0)}%</span>`
+      : r.status === "no-baseline" ? `${r.delta >= 0 ? "+" : ""}${fmt(r.delta)} <span class="muted">(no % - last week was 0)</span>` : `<span class="muted" title="${esc(r.detail)}">unavailable</span>`;
+    wh += `<tr><td>${esc(r.label)}</td><td class="n">${fmt(r.prior)}</td><td class="n">${fmt(r.current)}</td><td class="n">${ch}</td></tr>`; });
+  wh += "</table></div>";
+  if (S.series && S.series.length > 1) wh += `<div class="card" style="margin-top:14px"><div class="label">Weekly revenue, last ${S.series.length} weeks</div><table>${S.series.map(s => `<tr><td>${esc(s.week)}</td><td class="n">${money(s.revenue)}</td></tr>`).join("")}</table></div>`;
+  $("t-wow").innerHTML = wh;
+  renderWhatif(); renderSources(); renderDictionary();
+  show(store.get("tab") || "revenue");
+}
+
+function renderWhatif(){
+  const p = S.pacing; if (p.status !== "live") { $("t-whatif").innerHTML = '<p class="empty">What-if needs this month\'s revenue.</p>'; return; }
+  // Levers start at the live values (measured, trained or a starting guess - each says which), and a scenario
+  // SCALES the live run rate by the ratio of each change, so "Reset to live" reproduces the live projection
+  // exactly. Ranges are built around YOUR numbers, so no starting value is ever clamped.
+  const v0 = (r, d) => (r && r.value) ? r.value : d;
+  const base = { cr: v0(p.conversion_rate, .02), aov: v0(p.aov, 75), spd: v0(p.sessions_per_day, 1000), goal: p.goal, horizon: Math.max(1, p.days_left) };
+  const src = { cr: p.conversion_rate.source, aov: p.aov.source, spd: (p.sessions_per_day || {}).source };
+  const range = (b, lo, hi) => [b * lo, b * hi];
+  const lev = [["cr","Conversion rate",...range(base.cr, .25, 4),(v)=>pct(v,2)],["aov","Average order value",...range(base.aov, .25, 4),money],
+    ["spd","Sessions per day",...range(base.spd, .25, 4),(v)=>Math.round(v).toLocaleString()],["goal","Monthly goal",...range(Math.max(base.goal, 1000), .25, 4),money],
+    ["horizon","Horizon (days)",1,365,(v)=>Math.round(v)+" days"]];
+  $("t-whatif").innerHTML = `<div class="grid"><div class="card"><div class="label">Levers <span class="src scenario">scenario</span></div>
+    ${lev.map(([k,n,mn,mx]) => `<div class="lever"><div class="row"><span>${n}${src[k] && src[k] !== "measured" ? ` <span class="src ${esc(src[k])}">starts at ${esc(src[k])}</span>` : ""}</span><b id="v-${k}"></b></div><input type="range" id="l-${k}" min="${mn}" max="${mx}" step="any" value="${base[k]}" aria-label="${n}"></div>`).join("")}
+    <div style="display:flex;gap:8px;flex-wrap:wrap"><button class="ghost" id="reset">Reset to live</button><button class="act" id="save">Save scenario</button></div></div>
+    <div class="card"><div class="label">Projected</div><div id="wf"></div></div>
+    <div class="card hero"><div class="label">Saved scenarios</div><div id="saved"></div></div></div>
+    <p class="muted" style="font-size:13px">Scenario only. Your live numbers on the other tabs never change. Levers start at your measured values.</p>`;
+  const val = () => Object.fromEntries(lev.map(([k]) => [k, +$("l-"+k).value]));
+  function calc(v){ const daily = p.run_rate_daily * (v.cr / base.cr) * (v.aov / base.aov) * (v.spd / base.spd), monthEnd = p.revenue_mtd + daily * p.days_left, gap = Math.max(0, v.goal - p.revenue_mtd);
+    return { daily, monthEnd, surplus: monthEnd - v.goal, horizonRev: daily * v.horizon, ttg: gap ? (daily > 0 ? Math.ceil(gap / daily) : null) : 0 }; }
+  function draw(){ const v = val(); lev.forEach(([k,,,,fmt]) => $("v-"+k).textContent = fmt(v[k])); const c = calc(v);
+    $("wf").innerHTML = `<table><tr><td>Revenue so far</td><td class="n">${money(p.revenue_mtd)}</td></tr>
+      <tr><td>+ rest of month at these levers</td><td class="n">${money(c.daily * p.days_left)}</td></tr>
+      <tr><td><b>Month-end</b></td><td class="n"><b>${money(c.monthEnd)}</b></td></tr>
+      <tr><td>vs goal</td><td class="n ${c.surplus >= 0 ? "good" : "bad"}">${signed(c.surplus)}</td></tr>
+      <tr><td>vs live projection</td><td class="n">${signed(c.monthEnd - p.projected_month_end)}</td></tr>
+      <tr><td>Orders per day</td><td class="n">${(c.daily / v.aov).toFixed(1)}</td></tr>
+      <tr><td>Revenue over ${v.horizon} days</td><td class="n">${money(c.horizonRev)}</td></tr>
+      <tr><td>Time to goal</td><td class="n">${c.ttg == null ? "never at this pace" : c.ttg + " days"}</td></tr></table>`; }
+  function drawSaved(){ const sv = store.get("scenarios") || {}; const fromCli = S.scenarios || {}; const rows = [];
+    Object.entries(fromCli).forEach(([n, r]) => rows.push([n + " (CLI)", r.waterfall.projected_month_end, r.time_to_goal_days]));
+    Object.entries(sv).forEach(([n, v]) => { const c = calc(v); rows.push([n, c.monthEnd, c.ttg]); });
+    $("saved").innerHTML = rows.length ? `<table><tr><th>Scenario</th><th class="n">Month-end</th><th class="n">Time to goal</th></tr>${rows.map(r => `<tr><td>${esc(r[0])}</td><td class="n">${money(r[1])}</td><td class="n">${r[2] == null ? "-" : r[2] + " days"}</td></tr>`).join("")}</table>` : '<p class="empty">Save a scenario to compare it here.</p>'; }
+  lev.forEach(([k]) => $("l-"+k).oninput = draw);
+  $("reset").onclick = () => { lev.forEach(([k]) => $("l-"+k).value = base[k]); draw(); };
+  $("save").onclick = () => { const n = prompt("Name this scenario"); if (!n) return; const sv = store.get("scenarios") || {}; sv[n] = val(); store.set("scenarios", sv); drawSaved(); };
+  draw(); drawSaved();
+}
+
+function renderSources(){
+  const h = S.health; let o = "";
+  if (!h) o = '<div class="card"><p class="empty">Running on a CSV export. Run <code>python3 scripts/connectors.py sync</code> to connect live sources and see their health here.</p></div>';
+  else { o = `<div class="card"><div class="label">Connections</div><div class="mid">${esc(h.summary)}</div><table>
+      <tr><th>Source</th><th>State</th><th>Detail</th></tr>${h.rows.map(r => `<tr><td>${esc(r.name)}</td><td class="${r.state === "connected" ? "good" : (r.state === "off" ? "muted" : "bad")}">${esc(r.state)}</td>
+      <td>${esc(r.detail)}${r.fix && r.state !== "connected" ? `<div class="muted" style="font-size:13px">Fix: ${esc(r.fix)}</div>` : ""}</td></tr>`).join("")}</table></div>`;
+    const c = h.completeness; if (c) o += `<div class="card" style="margin-top:14px"><div class="label">Setup completeness</div><div class="bar"><i style="width:${c.score}%"></i></div>
+      <div>${c.score}% connected${c.next_best ? ` · <b>next best: ${esc(c.next_best.name)}</b> - ${esc(c.next_best.why)}` : " · fully connected"}</div></div>`; }
+  $("t-sources").innerHTML = o;
+}
+
+function renderDictionary(){
+  const c = S.catalog || {}; const k = Object.keys(c);
+  $("t-dictionary").innerHTML = k.length ? `<div class="card"><table><tr><th>Metric</th><th>Kind</th><th>Source and calculation</th></tr>
+    ${k.map(id => `<tr><td><b>${esc(c[id].label)}</b></td><td>${chip(c[id].kind)}</td><td>${esc(c[id].source)}<div class="muted" style="font-size:13px">${esc(c[id].calc)} · ${esc(c[id].basis)}</div></td></tr>`).join("")}</table></div>` : '<p class="empty">No catalog.</p>';
+}
+</script>
+</body>
+</html>

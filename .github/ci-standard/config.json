@@ -3,5 +3,8 @@
   "release_branches": [],
   "deploy_workflows": [],
   "weekly_minute_budget": 300,
-  "exceptions": []
+  "exceptions": [],
+  "local_gate": [
+    "python3 -W error::ResourceWarning -m unittest discover -s tests"
+  ]
 }
