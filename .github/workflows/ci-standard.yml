@@ -1,0 +1,120 @@
+name: CI standard
+
+# The CI/CD standard check (CI-STANDARD.md). The job is named ci-standard and that name is frozen: it is the required
+# status check in this repository's ruleset, so renaming it blocks every pull request.
+# It reports on every pull request (no trigger paths filter, so the required check always answers) and exits in seconds when
+# the pull request changes no workflow file. It lints only the workflow files this change touched; older violations print as
+# warnings. The lint and its config are read from the BASE commit, so a pull request cannot weaken its own checker; a change
+# to the checker is also run in its new version. On a push to a protected branch that changes a workflow, a violation fails
+# the run and opens one P1 issue (an admin merge cannot hide it).
+on:
+  pull_request:
+  push:
+    branches: [main]
+    paths:
+      - '.github/workflows/**'
+      - '.github/ci-standard/**'
+      - 'CI-STANDARD.md'
+
+concurrency:
+  group: ci-standard-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+permissions:
+  contents: read
+  pull-requests: write
+  issues: write
+
+jobs:
+  ci-standard:
+    name: ci-standard
+    # CI010 (Roman, 2026-11-11): tests and this lint run locally before the push (local-gate.sh), so on a pull request
+    # this job is SKIPPED. A job skipped by a job-level `if:` costs nothing, finishes at once, and GitHub reports it as
+    # a passing required check, so the ruleset requiring `ci-standard` still lets the merge through with no wait. On a
+    # push to a protected branch that changes a workflow it still runs and opens the P1 issue (the bypass watch).
+    if: github.event_name != 'pull_request'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Which files did this change touch
+        id: changed
+        env:
+          GH_TOKEN: ${{ github.token }}
+          EVENT: ${{ github.event_name }}
+          REPO: ${{ github.repository }}
+          PR: ${{ github.event.pull_request.number }}
+          BEFORE: ${{ github.event.before }}
+          SHA: ${{ github.sha }}
+        run: |
+          set -uo pipefail
+          : > "$RUNNER_TEMP/changed.txt"
+          if [ "$EVENT" = "pull_request" ]; then
+            gh api --paginate "repos/$REPO/pulls/$PR/files" --jq '.[] | select(.status != "removed") | .filename' > "$RUNNER_TEMP/changed.txt"
+          elif ! printf '%s' "$BEFORE" | grep -Eq '^0+$'; then
+            gh api "repos/$REPO/compare/$BEFORE...$SHA" --jq '.files[] | select(.status != "removed") | .filename' > "$RUNNER_TEMP/changed.txt"
+          else
+            echo '.github/workflows/ci-standard.yml' > "$RUNNER_TEMP/changed.txt"
+          fi
+          if grep -Eq '^\.github/(workflows|ci-standard)/|^CI-STANDARD\.md$' "$RUNNER_TEMP/changed.txt"; then
+            echo "relevant=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "relevant=false" >> "$GITHUB_OUTPUT"
+            echo "ci-standard: this change touches no workflow or standard file, nothing to check"
+          fi
+      - if: steps.changed.outputs.relevant == 'true'
+        uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
+        with:
+          fetch-depth: 1
+          sparse-checkout: .github
+      - name: Lint with the base version of the checker, then the new version
+        if: steps.changed.outputs.relevant == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          EVENT: ${{ github.event_name }}
+          REPO: ${{ github.repository }}
+          BASE_SHA: ${{ github.event.pull_request.base.sha || github.event.before }}
+        run: |
+          set -uo pipefail
+          base="$RUNNER_TEMP/ci-standard-base"; mkdir -p "$base"
+          have_base=0
+          if [ -n "$BASE_SHA" ] && ! printf '%s' "$BASE_SHA" | grep -Eq '^0+$'; then
+            if git fetch -q --depth 1 origin "$BASE_SHA" 2>/dev/null; then
+              for f in ci-cost-lint.py config.json; do
+                git show "FETCH_HEAD:.github/ci-standard/$f" > "$base/$f" 2>/dev/null || rm -f "$base/$f"
+              done
+              [ -f "$base/ci-cost-lint.py" ] && have_base=1
+            fi
+          fi
+          rc=0
+          extra=""
+          [ "$EVENT" = "push" ] && extra="--open-issues $REPO"
+          if [ "$have_base" = 1 ]; then
+            echo "== checker from the base commit"
+            python3 "$base/ci-cost-lint.py" --root . --changed-list "$RUNNER_TEMP/changed.txt" --config "$base/config.json" $extra || rc=1
+          else
+            echo "== no checker on the base commit (first install): using this change's version only"
+          fi
+          if [ "$have_base" = 0 ] || grep -Eq '^\.github/ci-standard/|^CI-STANDARD\.md$' "$RUNNER_TEMP/changed.txt"; then
+            echo "== checker from this change"
+            python3 .github/ci-standard/ci-cost-lint.py --root . --changed-list "$RUNNER_TEMP/changed.txt" || rc=1
+          fi
+          exit $rc
+      - name: Comment the weekly Actions minutes this change adds
+        continue-on-error: true
+        if: always() && github.event_name == 'pull_request' && steps.changed.outputs.relevant == 'true' && github.event.pull_request.head.repo.full_name == github.repository
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          PR: ${{ github.event.pull_request.number }}
+        run: |
+          set -uo pipefail
+          out="$RUNNER_TEMP/estimate.md"; rm -f "$out"
+          grep -q -- '--estimate-out' .github/ci-standard/ci-cost-lint.py || { echo "this checker has no estimate yet"; exit 0; }
+          python3 .github/ci-standard/ci-cost-lint.py --root . --changed-list "$RUNNER_TEMP/changed.txt" --estimate-out "$out" --report-only > /dev/null || true
+          [ -s "$out" ] || { echo "no workflow file changed, no estimate"; exit 0; }
+          existing=$(gh api --paginate "repos/$REPO/issues/$PR/comments" --jq '.[] | select(.body | startswith("<!-- ci-standard-estimate -->")) | .id' | head -1)
+          if [ -n "$existing" ]; then
+            gh api -X PATCH "repos/$REPO/issues/comments/$existing" -F body=@"$out" > /dev/null
+          else
+            gh api -X POST "repos/$REPO/issues/$PR/comments" -F body=@"$out" > /dev/null
+          fi
